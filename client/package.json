@@ -1,0 +1,13 @@
+{
+	"name": "hgls-collector",
+	"version": "1.0.0",
+	"private": true,
+	"description": "Collector for https://github.com/oxmix/highload-stats",
+	"main": "index.js",
+	"keywords": [],
+	"author": "Oxmix",
+	"license": "ISC",
+	"dependencies": {
+		"ws": "^1.1.5"
+	}
+}
