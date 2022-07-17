@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-const config = require('./config'),
-	wss = require('ws'),
+const wss = require('ws'),
 	{
 		exec,
 		spawn
@@ -50,7 +49,7 @@ process.title = processName;
 	}, 3 * 60 * 1000);
 }());
 
-const ws = new wss(config.endpoint);
+const ws = new wss(process.env.ENDPOINT || 'ws://127.0.0.1:3939');
 let isOpen = false;
 ws.onerror = function (event) {
 	log('error', '[ws] ' + event.toString())
@@ -240,20 +239,25 @@ bandwidth.stdout.on('data', function (data) {
 // space
 setInterval(function () {
 	try {
-		var space = spawn('df', ['-m', '--total', '--type', 'ext4']);
-		space.stdout.on('data', function (data) {
-			var regex = /(\/dev\/|total).*? [0-9]+.*?([0-9]+).*?([0-9]+).*?% (.+)/g;
-			var total = 0;
-			var space = [];
-			var s;
-			while ((s = regex.exec(data.toString())) !== null) {
-				if (s[1] === 'total')
-					total = +s[2] + +s[3];
-
-				if (s[1] === '/dev/') {
-					space.push([s[4], +s[2], +s[3]]);
-				}
+		var space = spawn('findmnt', ['-s', '--df', '--json', '--bytes']);
+		space.stdout.on('data', (data) => {
+			try {
+				data = JSON.parse(data);
+			} catch (_) {
 			}
+			if (!data.filesystems)
+				return;
+
+			let total = 0;
+			const space = [];
+			data.filesystems.forEach((e) => {
+				if (e.fstype !== 'ext4')
+					return;
+				e.used = e.used / 1024 ** 2;
+				e.avail = e.avail / 1024 ** 2;
+				space.push([e.target, e.used, e.avail]);
+				total +=  e.used + e.avail;
+			});
 
 			send({
 				event: 'space',
@@ -379,90 +383,89 @@ const dockerParseByte = function (str) {
 };
 
 // mysql
-if (config.mysql) {
-	var sqlQuery = "SHOW GLOBAL STATUS WHERE Variable_name IN (" +
-		"'Bytes_received', 'Bytes_sent', 'Innodb_data_read', 'Innodb_data_written'," +
-		"'Uptime', 'Connections', 'Max_used_connections', 'Queries', 'Slow_queries'," +
-		"'Com_select', 'Com_update', 'Com_insert', 'Com_delete'," +
-		"'Com_alter_table', 'Com_drop_table', 'Created_tmp_tables', 'Created_tmp_disk_tables');";
-	var mysqlMem = {};
-	var mysqlInterval = setInterval(function () {
-		try {
-			var mysqlSn = spawn('mysql', ['--defaults-extra-file=' + config.mysql.extraFile, '-e', sqlQuery]);
-			mysqlSn.on('error', function () {
-				log('warn', '[mysql] client not found');
-				clearInterval(mysqlInterval);
-			});
-			mysqlSn.stdout.on('data', function (out) {
-				var mysql = {
-					info: {},
-					traffic: {},
-					innodb: {},
-					queries: []
-				};
-				out.toString().match(/(\w+)\t(\d+)/gm).forEach(function (value) {
-					var keyVal = value.split(/\t/);
-					var key = keyVal[0].toLowerCase().replace('com_', '').replace(/_/g, ' ');
-					var val = keyVal[1];
-					switch (key) {
-						case 'uptime':
-						case 'max used connections':
-							mysql['info'][key] = parseInt(val);
-							break;
 
-						case 'bytes received':
-						case 'bytes sent':
-							mysql['traffic'][key] = val - mysqlMem[key] || 0;
-							mysqlMem[key] = val;
-							break;
+var sqlQuery = "SHOW GLOBAL STATUS WHERE Variable_name IN (" +
+	"'Bytes_received', 'Bytes_sent', 'Innodb_data_read', 'Innodb_data_written'," +
+	"'Uptime', 'Connections', 'Max_used_connections', 'Queries', 'Slow_queries'," +
+	"'Com_select', 'Com_update', 'Com_insert', 'Com_delete'," +
+	"'Com_alter_table', 'Com_drop_table', 'Created_tmp_tables', 'Created_tmp_disk_tables');";
+var mysqlMem = {};
+var mysqlInterval = setInterval(function () {
+	try {
+		var mysqlSn = spawn('mysql', ['--defaults-extra-file=/root/.my.cnf', '-e', sqlQuery]);
+		mysqlSn.on('error', function () {
+			log('warn', '[mysql] client not found');
+			clearInterval(mysqlInterval);
+		});
+		mysqlSn.stdout.on('data', function (out) {
+			var mysql = {
+				info: {},
+				traffic: {},
+				innodb: {},
+				queries: []
+			};
+			out.toString().match(/(\w+)\t(\d+)/gm).forEach(function (value) {
+				var keyVal = value.split(/\t/);
+				var key = keyVal[0].toLowerCase().replace('com_', '').replace(/_/g, ' ');
+				var val = keyVal[1];
+				switch (key) {
+					case 'uptime':
+					case 'max used connections':
+						mysql['info'][key] = parseInt(val);
+						break;
 
-						case 'innodb data read':
-						case 'innodb data written':
-							mysql['innodb'][key] = val - mysqlMem[key] || 0;
-							mysqlMem[key] = val;
-							break;
+					case 'bytes received':
+					case 'bytes sent':
+						mysql['traffic'][key] = val - mysqlMem[key] || 0;
+						mysqlMem[key] = val;
+						break;
 
-						default:
-							mysql['queries'].push({
-								k: key,
-								v: val - mysqlMem[key] || 0
-							});
-							mysqlMem[key] = val;
-							break;
-					}
-				});
-				mysql['queries'].push({
-					k: 'slaves latency',
-					v: mysqlMem['slaves latency']
-				});
+					case 'innodb data read':
+					case 'innodb data written':
+						mysql['innodb'][key] = val - mysqlMem[key] || 0;
+						mysqlMem[key] = val;
+						break;
 
-				var slavesLatency = 0;
-				exec('mysql --defaults-extra-file=' + config.mysql.extraFile + ' -e "SHOW SLAVE STATUS\\G"',
-					function (error, stdout, stderr) {
-						var sbm = stdout.match(/Seconds_Behind_Master: (\d+)/gm);
-						if (!sbm)
-							return;
-						sbm.forEach(function (value) {
-							var keyVal = value.split(/: /);
-							slavesLatency += parseInt(keyVal[1]);
+					default:
+						mysql['queries'].push({
+							k: key,
+							v: val - mysqlMem[key] || 0
 						});
-						mysqlMem['slaves latency'] = slavesLatency;
-					});
-
-				send({
-					event: 'mysql',
-					mysql: mysql
-				});
+						mysqlMem[key] = val;
+						break;
+				}
 			});
-		} catch (e) {
-			log('error', '[mysql exec] failed: ' + e.toString());
-		}
-	}, 1000);
-}
+			mysql['queries'].push({
+				k: 'slaves latency',
+				v: mysqlMem['slaves latency']
+			});
+
+			var slavesLatency = 0;
+			exec('mysql --defaults-extra-file=/root/.my.cnf -e "SHOW SLAVE STATUS\\G"',
+				function (error, stdout, stderr) {
+					var sbm = stdout.match(/Seconds_Behind_Master: (\d+)/gm);
+					if (!sbm)
+						return;
+					sbm.forEach(function (value) {
+						var keyVal = value.split(/: /);
+						slavesLatency += parseInt(keyVal[1]);
+					});
+					mysqlMem['slaves latency'] = slavesLatency;
+				});
+
+			send({
+				event: 'mysql',
+				mysql: mysql
+			});
+		});
+	} catch (e) {
+		log('error', '[mysql exec] failed: ' + e.toString());
+	}
+}, 1000);
 
 // redis
-var redisMem = {};
-var redisInterval = setInterval(function () {
+const redisMem = {};
+const redisInterval = setInterval(function () {
 	try {
 		exec("redis-cli info", function (error, stdout, stderr) {
 			if (error) {
@@ -514,68 +517,66 @@ var redisInterval = setInterval(function () {
 }, 1000);
 
 // pg-bouncer
-if (config.pgBouncer) {
-	var pgBouncerMem = {};
-	var pgBouncerExec = spawn('sudo', ['-u', config.pgBouncer.user,
-		'psql', '-p', config.pgBouncer.port, '-wU', 'pgbouncer', 'pgbouncer']);
-	pgBouncerExec.stdout.on('data', function (data) {
-		var rows = data.toString().split("\n");
-		rows.pop();
-		rows.pop();
-		var head = rows.shift().split('|');
-		var pgBouncer = {
-			sent: 0,
-			received: 0,
-			queries: []
-		};
-		rows.forEach(function (row) {
-			row = row.split('|');
-			var dbName = row[0].trim();
-			if (dbName === 'pgbouncer')
-				return;
+const pgBouncerMem = {};
+const pgBouncerExec = spawn('psql', ['-h', '127.0.0.1', '-p', (process.env.PGBOUNCER_PORT || 6432),
+	'-wU', 'pgbouncer', 'pgbouncer']);
+pgBouncerExec.stdout.on('data', function (data) {
+	var rows = data.toString().split("\n");
+	rows.pop();
+	rows.pop();
+	var head = rows.shift().split('|');
+	var pgBouncer = {
+		sent: 0,
+		received: 0,
+		queries: []
+	};
+	rows.forEach(function (row) {
+		row = row.split('|');
+		var dbName = row[0].trim();
+		if (dbName === 'pgbouncer')
+			return;
 
-			row.forEach(function (val, key) {
-				val = val.trim();
-				var name = head[key].trim();
-				if (name === 'total_sent')
-					pgBouncer.sent += val - pgBouncerMem[key] || 0;
+		row.forEach(function (val, key) {
+			val = val.trim();
+			var name = head[key].trim();
+			if (name === 'total_sent')
+				pgBouncer.sent += val - pgBouncerMem[key] || 0;
 
-				if (name === 'total_received')
-					pgBouncer.received += val - pgBouncerMem[key] || 0;
+			if (name === 'total_received')
+				pgBouncer.received += val - pgBouncerMem[key] || 0;
 
-				pgBouncerMem[key] = +val;
+			pgBouncerMem[key] = +val;
 
-				if (name === 'total_query_count' || name === 'total_requests') {
-					pgBouncer.queries.push({
-						k: dbName,
-						v: val - pgBouncerMem[key + dbName] || 0
-					});
+			if (name === 'total_query_count' || name === 'total_requests') {
+				pgBouncer.queries.push({
+					k: dbName,
+					v: val - pgBouncerMem[key + dbName] || 0
+				});
 
-					pgBouncerMem[key + dbName] = +val;
-				}
-			});
-		});
-
-		send({
-			event: 'pg-bouncer',
-			pgBouncer: pgBouncer
+				pgBouncerMem[key + dbName] = +val;
+			}
 		});
 	});
-	pgBouncerExec.stderr.on('data', function () {
-		clearInterval(pgBouncerInterval);
+
+	send({
+		event: 'pg-bouncer',
+		pgBouncer: pgBouncer
 	});
-	var pgBouncerInterval = setInterval(function () {
-		pgBouncerExec.stdin.write('SHOW STATS;\n');
-	}, 1000);
-}
+});
+pgBouncerExec.stderr.on('data', function () {
+	clearInterval(pgBouncerInterval);
+});
+const pgBouncerInterval = setInterval(function () {
+	pgBouncerExec.stdin.write('SHOW STATS;\n');
+}, 1000);
 
 // nginx
 var nginxMem = {};
 var nginxStats = function () {
 	http.get({
-		host: '127.0.0.1',
-		port: 80,
-		path: '/hgls-nginx'
+		host: process.env.NGINX_HOST || '127.0.0.1',
+		port: process.env.NGINX_PORT || 80,
+		path: process.env.NGINX_PATH || '/hgls-nginx'
 	}, function (res) {
 		if (res.statusCode !== 200) {
 			log('error', '[nginx] get status: ' + res.statusCode);
@@ -627,9 +628,9 @@ nginxStats();
 let fpmMem = {};
 let fpmStats = function () {
 	http.get({
-		host: config.fpm.host,
-		port: config.fpm.port,
-		path: config.fpm.path + '?full&json'
+		host: process.env.NGINX_HOST || '127.0.0.1',
+		port: process.env.NGINX_PORT || 80,
+		path: (process.env.FPM_PATH || '/hgls-fpm') + '?full&json'
 	}, function (res) {
 		if (res.statusCode !== 200) {
 			log('warn', '[fpm] get status: ' + res.statusCode);
@@ -686,9 +687,7 @@ let fpmStats = function () {
 		setTimeout(fpmStats, 1000 * 60);
 	});
 };
-if (config.fpm) {
-	fpmStats();
-}
+fpmStats();
 
 // telemetry
 let telemetry = {
