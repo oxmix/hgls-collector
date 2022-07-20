@@ -1,6 +1,6 @@
 # hgls-collector
 [![CI Status](https://github.com/oxmix/hgls-collector/workflows/Build%20and%20publish/badge.svg)](https://github.com/oxmix/hgls-collector/actions/workflows/hub-docker.yaml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/oxmix/hgls-collector.svg?logo=docker)](https://hub.docker.com/r/tonistiigi/binfmt/)
+[![Docker Pulls](https://img.shields.io/docker/pulls/oxmix/hgls-collector.svg?logo=docker)](https://hub.docker.com/r/oxmix/hgls-collector)
 
 HGLS client collector module for [https://github.com/oxmix/highload-stats](https://github.com/oxmix/highload-stats)
 
