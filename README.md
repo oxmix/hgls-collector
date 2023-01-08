@@ -11,6 +11,7 @@ $ docker run -d --name hgls-collector \
   --restart always --log-opt max-size=5m \
   --network host --privileged \
   -v /etc/fstab:/etc/fstab:ro \
+  -v /var/log/auth.log:/var/log/auth.log:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -v /root/.my.cnf:/root/.my.cnf:ro \
   -v /root/.pgpass:/root/.pgpass:ro \
@@ -33,6 +34,7 @@ containers:
     log-opt: max-size=5m
     volumes:
       - /etc/fstab:/etc/fstab:ro
+      - /var/log/auth.log:/var/log/auth.log:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /root/.my.cnf:/root/.my.cnf:ro
       - /root/.pgpass:/root/.pgpass:ro

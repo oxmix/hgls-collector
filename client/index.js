@@ -464,14 +464,23 @@ var mysqlInterval = setInterval(function () {
 }, 1000);
 
 // redis
-const redisMem = {};
-const redisInterval = setInterval(function () {
+let redisMem = {};
+let redisWorked = false;
+let redisInterval = setInterval(redisCollect, 1000);
+function redisCollect() {
 	try {
 		exec("redis-cli info", function (error, stdout, stderr) {
 			if (error) {
+				log('error', '[redis] stderr: ' + stderr);
 				clearInterval(redisInterval);
+				if (redisWorked) {
+					log('info', '[redis] retrying after 10 sec');
+					redisMem = {};
+					setTimeout(() => redisInterval = setInterval(redisCollect, 1000), 10000);
+				}
 				return;
 			}
+			redisWorked = true;
 			var out = stdout.match(/(.*?):([0-9.]+)/gm);
 			if (!out)
 				return;
@@ -514,61 +523,76 @@ const redisInterval = setInterval(function () {
 	} catch (e) {
 		log('error', '[redis exec] failed: ' + e.toString());
 	}
-}, 1000);
+}
 
 // pg-bouncer
-const pgBouncerMem = {};
-const pgBouncerExec = spawn('psql', ['-h', '127.0.0.1', '-p', (process.env.PGBOUNCER_PORT || 6432),
-	'-wU', 'pgbouncer', 'pgbouncer']);
-pgBouncerExec.stdout.on('data', function (data) {
-	var rows = data.toString().split("\n");
-	rows.pop();
-	rows.pop();
-	var head = rows.shift().split('|');
-	var pgBouncer = {
-		sent: 0,
-		received: 0,
-		queries: []
-	};
-	rows.forEach(function (row) {
-		row = row.split('|');
-		var dbName = row[0].trim();
-		if (dbName === 'pgbouncer')
-			return;
+let pgBouncerMem = {};
+let pgBouncerSpawn = null;
+let pgBouncerInterval = null;
+let pgBouncerWorked = false;
+pgBouncerCollect();
+function pgBouncerCollect() {
+	pgBouncerSpawn = spawn('psql', ['-h', '127.0.0.1', '-p', (process.env.PGBOUNCER_PORT || 6432),
+		'-wU', 'pgbouncer', 'pgbouncer']);
+	pgBouncerSpawn.stdout.on('data', function (data) {
+		pgBouncerWorked = true;
+		var rows = data.toString().split("\n");
+		rows.pop();
+		rows.pop();
+		var head = rows.shift().split('|');
+		var pgBouncer = {
+			sent: 0,
+			received: 0,
+			queries: []
+		};
+		rows.forEach(function (row) {
+			row = row.split('|');
+			var dbName = row[0].trim();
+			if (dbName === 'pgbouncer')
+				return;
 
-		row.forEach(function (val, key) {
-			val = val.trim();
-			var name = head[key].trim();
-			if (name === 'total_sent')
-				pgBouncer.sent += val - pgBouncerMem[key] || 0;
+			row.forEach(function (val, key) {
+				val = val.trim();
+				var name = head[key].trim();
+				if (name === 'total_sent')
+					pgBouncer.sent += val - pgBouncerMem[key] || 0;
 
-			if (name === 'total_received')
-				pgBouncer.received += val - pgBouncerMem[key] || 0;
+				if (name === 'total_received')
+					pgBouncer.received += val - pgBouncerMem[key] || 0;
 
-			pgBouncerMem[key] = +val;
+				pgBouncerMem[key] = +val;
 
-			if (name === 'total_query_count' || name === 'total_requests') {
-				pgBouncer.queries.push({
-					k: dbName,
-					v: val - pgBouncerMem[key + dbName] || 0
-				});
+				if (name === 'total_query_count' || name === 'total_requests') {
+					pgBouncer.queries.push({
+						k: dbName,
+						v: val - pgBouncerMem[key + dbName] || 0
+					});
 
-				pgBouncerMem[key + dbName] = +val;
-			}
+					pgBouncerMem[key + dbName] = +val;
+				}
+			});
+		});
+
+		send({
+			event: 'pg-bouncer',
+			pgBouncer: pgBouncer
 		});
 	});
 
-	send({
-		event: 'pg-bouncer',
-		pgBouncer: pgBouncer
+	pgBouncerSpawn.stderr.on('data', function (e) {
+		clearInterval(pgBouncerInterval);
+		log('error', '[pgbouncer] stderr: ' + e);
+		if (pgBouncerWorked) {
+			log('info', '[pgbouncer] trying reconnect after 10 sec');
+			pgBouncerMem = {};
+			setTimeout(() => pgBouncerCollect(), 10000);
+		}
 	});
-});
-pgBouncerExec.stderr.on('data', function () {
-	clearInterval(pgBouncerInterval);
-});
-const pgBouncerInterval = setInterval(function () {
-	pgBouncerExec.stdin.write('SHOW STATS;\n');
-}, 1000);
+
+	pgBouncerInterval = setInterval(function () {
+		pgBouncerSpawn.stdin.write('SHOW STATS;\n');
+	}, 1000);
+}
 
 // nginx
 var nginxMem = {};
