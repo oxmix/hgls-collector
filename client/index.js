@@ -256,7 +256,7 @@ setInterval(function () {
 				e.used = e.used / 1024 ** 2;
 				e.avail = e.avail / 1024 ** 2;
 				space.push([e.target, e.used, e.avail]);
-				total +=  e.used + e.avail;
+				total += e.used + e.avail;
 			});
 
 			send({
@@ -272,7 +272,7 @@ setInterval(function () {
 
 // gpu
 let gpuSpawn = spawn('nvidia-smi', ['-q', '-x', '-l', '1']).on('error', function (err) {
-	log('error', '[gpu]: ' + err.toString());
+	log('error', '[gpu] err: ' + err.toString().replace('Error:', ''));
 });
 let gpuBuff = '';
 const gpuRegex = new RegExp(`<product_name>(.*?)</product_name>.*?<pci_device>([0-9]+)</pci_device>
@@ -334,7 +334,8 @@ const gpuParse = function (buff) {
 
 // docker
 let dockerContainers = {};
-function dockerRefresh () {
+
+function dockerRefresh() {
 	http.request({
 		socketPath: '/var/run/docker.sock',
 		path: 'http://localhost/v1.38/containers/json',
@@ -359,10 +360,9 @@ function dockerRefresh () {
 			} catch (e) {
 			}
 		})
-	})
-		.on('error', () => dockerContainers = {})
-		.end()
+	}).on('error', () => dockerContainers = {}).end()
 }
+
 dockerRefresh()
 setInterval(() => dockerRefresh(), 3000)
 
@@ -387,7 +387,10 @@ function dockerWatcher(id, name) {
 
 		res.on('end', () => delete dockerContainers[name])
 		res.on('close', () => delete dockerContainers[name])
-	}).on('error', () => delete dockerContainers[name]).end()
+	}).on('error', (err) => {
+		log('error', '[docker-watcher] err: ' + err.toString())
+		delete dockerContainers[name]
+	}).end()
 }
 
 setInterval(() => {
@@ -485,6 +488,7 @@ var mysqlInterval = setInterval(function () {
 let redisMem = {};
 let redisWorked = false;
 let redisInterval = setInterval(redisCollect, 1000);
+
 function redisCollect() {
 	try {
 		exec("redis-cli info", function (error, stdout, stderr) {
@@ -549,6 +553,7 @@ let pgBouncerSpawn = null;
 let pgBouncerInterval = null;
 let pgBouncerWorked = false;
 pgBouncerCollect();
+
 function pgBouncerCollect() {
 	pgBouncerSpawn = spawn('psql', ['-h', '127.0.0.1', '-p', (process.env.PGBOUNCER_PORT || 6432),
 		'-wU', 'pgbouncer', 'pgbouncer']);
@@ -813,7 +818,7 @@ function log(type, msg) {
 			color = '\u001b[0m'
 	}
 
-	console.log('[' + (new Date()).toLocaleString() + '] [' + color + type + reset + '] ' + msg);
+	console.log('[' + color + type + reset + '] ' + msg);
 
 	return true;
 }
