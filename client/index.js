@@ -331,59 +331,77 @@ const gpuParse = function (buff) {
 	});
 };
 
+
 // docker
-let docker = {};
-let dockerControl = {};
-let dockerPush = 0;
-let dockerSpawn = spawn('docker', ['stats', '--format', 'table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}'])
-	.on('error', function (err) {
-		log('error', '[docker]: ' + err.toString());
-	});
-dockerSpawn.stdout.on('data', function (data) {
-	data.toString().split('\n').forEach(function (e) {
-		const t = e.split(/\s{3,}/);
-		if (t.length !== 3 || t[0] === '' || t[1] === '' || t[2] === '' || t[1] === 'CPU %')
-			return;
+let dockerContainers = {};
+function dockerRefresh () {
+	http.request({
+		socketPath: '/var/run/docker.sock',
+		path: 'http://localhost/v1.38/containers/json',
+	}, (res) => {
+		let buff = [];
 
-		const time = (new Date()).getTime();
+		res.on('data', function (chunk) {
+			buff.push(chunk)
+		})
 
-		docker[t[0]] = [parseFloat(t[1]), dockerParseByte(t[2])];
-		dockerControl[t[0]] = time;
+		res.on('end', function () {
+			try {
+				JSON.parse(Buffer.concat(buff).toString()).forEach(c => {
+					const name = c.Names[0].substring(1)
+					if (name in dockerContainers)
+						return;
 
-		if (time - 999 > dockerPush) {
-			dockerPush = time;
-			send({
-				event: 'docker',
-				docker: docker
-			});
+					dockerContainers[name] = []
 
-			Object.keys(dockerControl).forEach((n) => {
-				if (dockerPush - 5000 > dockerControl[n]) {
-					delete docker[n];
-					delete dockerControl[n];
-				}
-			});
-		}
-	});
-});
-const dockerParseByte = function (str) {
-	str = str.split(' / ')[0];
-	const val = parseFloat(str);
-	const unit = str.substr(-3);
-	if (unit === 'KiB') {
-		return Math.round(val * 1000);
-	} else if (unit === 'MiB') {
-		return Math.round(val * 1000 ** 2);
-	} else if (unit === 'GiB') {
-		return Math.round(val * 1000 ** 3);
-	} else if (unit === 'TiB') {
-		return Math.round(val * 1000 ** 4);
-	}
-	return -1;
-};
+					setTimeout(() => dockerWatcher(c.Id, name))
+				})
+			} catch (e) {
+			}
+		})
+	})
+		.on('error', () => dockerContainers = {})
+		.end()
+}
+dockerRefresh()
+setInterval(() => dockerRefresh(), 3000)
+
+function dockerWatcher(id, name) {
+	http.request({
+		socketPath: '/var/run/docker.sock',
+		path: `http://localhost/v1.38/containers/${id}/stats`,
+	}, (res) => {
+		res.on('data', function (chunk) {
+			try {
+				const stats = JSON.parse('' + chunk)
+
+				const system_cpu_delta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage
+				const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage
+				const cpu = +(((cpuDelta / system_cpu_delta) * stats.cpu_stats.online_cpus * 100.0) || .0).toFixed(2)
+				const memory = (stats.memory_stats.usage - stats.memory_stats.stats.cache) || 0
+
+				dockerContainers[name] = [cpu, memory]
+			} catch (e) {
+			}
+		})
+
+		res.on('end', () => delete dockerContainers[name])
+		res.on('close', () => delete dockerContainers[name])
+	}).on('error', () => delete dockerContainers[name]).end()
+}
+
+setInterval(() => {
+	if (!Object.keys(dockerContainers).length)
+		return
+
+	send({
+		event: 'docker',
+		docker: dockerContainers
+	})
+}, 1000)
+
 
 // mysql
-
 var sqlQuery = "SHOW GLOBAL STATUS WHERE Variable_name IN (" +
 	"'Bytes_received', 'Bytes_sent', 'Innodb_data_read', 'Innodb_data_written'," +
 	"'Uptime', 'Connections', 'Max_used_connections', 'Queries', 'Slow_queries'," +
