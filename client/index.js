@@ -378,9 +378,10 @@ function dockerWatcher(id, name) {
 				const system_cpu_delta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage
 				const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage
 				const cpu = +(((cpuDelta / system_cpu_delta) * stats.cpu_stats.online_cpus * 100.0) || .0).toFixed(2)
-				const memory = (stats.memory_stats.usage - stats.memory_stats.stats.cache) || 0
+				const memory = (stats.memory_stats.usage) || 0
+				const memoryCache = stats.memory_stats.stats?.cache || 0
 
-				dockerContainers[name] = [cpu, memory]
+				dockerContainers[name] = [cpu, memory - memoryCache, memoryCache]
 			} catch (e) {
 			}
 		})

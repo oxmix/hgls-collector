@@ -10,6 +10,7 @@ HGLS client collector module for [https://github.com/oxmix/highload-stats](https
 $ docker run -d --name hgls-collector \
   --restart always --log-opt max-size=5m \
   --network host --privileged \
+  -e ENDPOINT=https://example.host/collector \
   -v /etc/fstab:/etc/fstab:ro \
   -v /var/log/auth.log:/var/log/auth.log:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
@@ -103,6 +104,7 @@ server {
         stub_status on;
         access_log off;
         allow 127.0.0.1;
+        allow 172.16.0.0/12;
         deny all;
     }
 
@@ -112,6 +114,7 @@ server {
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_pass /run/php/php*-fpm.sock;
         allow 127.0.0.1;
+        allow 172.16.0.0/12;
         deny all;
     }
 }
