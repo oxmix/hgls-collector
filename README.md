@@ -23,8 +23,6 @@ oxmix/hgls-collector
 ```yaml
 space: hgls
 name: collector-deployment
-nodes:
-  - "*"
 containers:
   - name: collector
     from: oxmix/hgls-collector:2
@@ -39,7 +37,7 @@ containers:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /root/.my.cnf:/root/.my.cnf:ro
       - /root/.pgpass:/root/.pgpass:ro
-    environments:
+    environment:
       - ENDPOINT=https://example.host/collector
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
